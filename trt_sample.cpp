@@ -34,7 +34,8 @@ struct TRTDestroy
     {
         if (obj)
         {
-            obj->destroy();
+            delete obj;
+            //obj->destroy();
         }
     }
 };
@@ -135,8 +136,7 @@ void postprocessResults(float *gpu_output, const nvinfer1::Dims &dims, int batch
 }
 
 // initialize TensorRT engine and parse ONNX model --------------------------------------------------------------------
-void parseOnnxModel(const std::string& model_path, TRTUniquePtr<nvinfer1::ICudaEngine>& engine,
-                    TRTUniquePtr<nvinfer1::IExecutionContext>& context)
+void parseOnnxModel(const std::string& model_path, TRTUniquePtr<nvinfer1::ICudaEngine>& engine, TRTUniquePtr<nvinfer1::IExecutionContext>& context)
 {
     TRTUniquePtr<nvinfer1::IBuilder> builder{nvinfer1::createInferBuilder(gLogger)};
     const auto explicitBatch = 1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
@@ -161,24 +161,73 @@ void parseOnnxModel(const std::string& model_path, TRTUniquePtr<nvinfer1::ICudaE
     // generate TensorRT engine optimized for the target platform
     engine.reset(builder->buildEngineWithConfig(*network, *config));
     context.reset(engine->createExecutionContext());
+
+    // serialize engine and write to file
+    size_t ext_idx = model_path.find_last_of('.');
+    std::string engine_name = model_path.substr(0, ext_idx) + ".engine";
+    std::ofstream engine_out(engine_name, std::ofstream::binary);
+    std::cout << "Writing engine to " << engine_name << '\n';
+    
+    nvinfer1::IHostMemory *serialized_model = engine->serialize();
+    engine_out.write((const char*)serialized_model->data(), serialized_model->size());
+    engine_out.close();
+    //write to disk
+    delete serialized_model;
 }
+
+
+void deserializeEngine(const std::string& model_path, TRTUniquePtr<nvinfer1::ICudaEngine>& engine, 
+        TRTUniquePtr<nvinfer1::IExecutionContext>& context)
+{
+    std::ifstream engine_file(model_path, std::ofstream::binary);
+    if (engine_file.fail())
+    {
+        return;
+    }
+
+    engine_file.seekg(0, std::ifstream::end);
+    auto fsize = engine_file.tellg();
+    engine_file.seekg(0, std::ifstream::beg);
+
+    std::vector<char> engine_data(fsize);
+    engine_file.read(engine_data.data(), fsize);
+
+    TRTUniquePtr<nvinfer1::IRuntime> runtime{nvinfer1::createInferRuntime(gLogger)};
+    engine.reset(runtime->deserializeCudaEngine(engine_data.data(), fsize, nullptr));
+    assert(engine.get() != nullptr);
+    context.reset(engine->createExecutionContext());
+}
+
 
 // main pipeline ------------------------------------------------------------------------------------------------------
 int main(int argc, char* argv[])
 {
     if (argc < 3)
     {
-        std::cerr << "usage: " << argv[0] << " model.onnx image.jpg\n";
+        std::cerr << "usage: " << argv[0] << " <model.onnx or model.engine> <image.jpg>\n";
         return -1;
     }
     std::string model_path(argv[1]);
     std::string image_path(argv[2]);
     int batch_size = 1;
-
+    
     // initialize TensorRT engine and parse ONNX model
     TRTUniquePtr<nvinfer1::ICudaEngine> engine{nullptr};
     TRTUniquePtr<nvinfer1::IExecutionContext> context{nullptr};
-    parseOnnxModel(model_path, engine, context);
+
+    size_t ext_idx = model_path.find_last_of('.');
+    if (model_path.substr(ext_idx, model_path.length()-1) == ".onnx")
+    {
+        std::cout << "Building engine from onnx file\n";
+        parseOnnxModel(model_path, engine, context);
+    }
+    else if (model_path.substr(ext_idx, model_path.length()-1) == ".engine")
+    {
+        std::cout << "Deserializing engine from file\n";
+        deserializeEngine(model_path, engine, context);
+    }
+    else
+        std::cerr << "Invalid model input, must be .onnx or .engine\n";
 
     // get sizes of input and output and allocate memory required for input data and for output data
     std::vector<nvinfer1::Dims> input_dims; // we expect only one input
