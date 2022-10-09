@@ -124,14 +124,10 @@ void postprocessResults(float *gpu_output, const nvinfer1::Dims &dims, int batch
     std::vector<int> indices(getSizeByDim(dims) * batch_size);
     std::iota(indices.begin(), indices.end(), 0); // generate sequence 0, 1, 2, 3, ..., 999
     std::sort(indices.begin(), indices.end(), [&cpu_output](int i1, int i2) {return cpu_output[i1] > cpu_output[i2];});
-    // print results
-    int i = 0;
-    std::cout << "donk" << classes[50] << '\n';
-    while (cpu_output[indices[i]] / sum > 0.005)
+    // print top 5 results
+    for (int i=0; i<5; i++)
     {
-        std::cout << "class: " << classes[indices[i]] << " | ";
-        std::cout << "confidence: " << 100 * cpu_output[indices[i]] / sum << "% | index: " << indices[i] << "\n";
-        ++i;
+        std::cout << "class " << classes[indices[i]] << "\n" << cpu_output[indices[i]] << "\n"; 
     }
 }
 
